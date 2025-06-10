@@ -1,0 +1,169 @@
+Let's analyze your code for **Apache Airflow 2.0 compatibility**.
+
+---
+
+## 1. Deprecated or Removed Features Used
+
+### a. `BaseOperator` Direct Inheritance
+- **Airflow 2.0** still supports direct inheritance from `BaseOperator`, but the recommended pattern is to use the `@apply_defaults` decorator for operator arguments. However, in Airflow 2.0, `@apply_defaults` is deprecated, and you should use standard Python `__init__` signatures with keyword-only arguments (which you are already doing).
+
+### b. `GCSHook` Import Path
+- Your import:  
+  ```python
+  from airflow.providers.google.cloud.hooks.gcs import GCSHook
+  ```
+  This is **correct for Airflow 2.0+** (the old path was `airflow.contrib.hooks.gcs_hook`).
+
+### c. Return Value of `execute`
+- In Airflow 2.0, the `execute` method should return a **serializable value** (usually a string, int, float, or dict).  
+  Your code returns a tuple:  
+  ```python
+  return status, error
+  ```
+  This is **not recommended** unless your downstream tasks can handle it. If `error` is an exception object, it may not be serializable.
+
+### d. Context Variables via `os.environ`
+- You are using `os.environ.get('AIRFLOW_CTX_DAG_RUN_ID')` etc.  
+  This is **not recommended**. In Airflow 2.0, you should use the `context` argument passed to `execute` to access DAG and run information.
+
+---
+
+## 2. Breaking Changes
+
+### a. `GCSHook.upload` Signature
+- In Airflow 2.0+, the `GCSHook.upload` method signature is:
+  ```python
+  def upload(self, bucket_name, object_name, filename, ...)
+  ```
+  Your usage is correct.
+
+### b. Operator Return Value
+- As above, returning a tuple (especially with an exception object) may break XCom serialization.
+
+### c. Logging
+- You are using custom logging functions (`logDebug`, `logError`).  
+  Airflow 2.0 expects you to use `self.log.info`, `self.log.debug`, etc., for operator logging.  
+  Custom logging is not a breaking change, but you lose integration with Airflow's logging system.
+
+### d. Operator Arguments
+- Your `__init__` signature is correct for Airflow 2.0 (using keyword-only arguments).
+
+---
+
+## 3. Suggested Fixes
+
+### a. Use Airflow's Logging
+Replace:
+```python
+logDebug(...)
+logError(...)
+```
+With:
+```python
+self.log.debug(...)
+self.log.error(...)
+```
+This ensures logs appear in Airflow's UI/log files.
+
+---
+
+### b. Use Context for DAG Info
+Replace:
+```python
+os.environ.get('AIRFLOW_CTX_DAG_RUN_ID')
+os.environ.get('AIRFLOW_CTX_DAG_ID')
+```
+With:
+```python
+context['run_id']
+context['dag'].dag_id
+```
+Or, for more info, see [Airflow context docs](https://airflow.apache.org/docs/apache-airflow/stable/templates-ref.html#variables).
+
+---
+
+### c. Return a Serializable Value
+Instead of:
+```python
+return status, error
+```
+Do:
+```python
+return status
+```
+Or, if you need to return both, ensure `error` is serializable (e.g., a string):
+```python
+return {"status": status, "error": str(error) if error else None}
+```
+
+---
+
+### d. Path Concatenation
+You use:
+```python
+self.local_path + actual
+```
+This can break if `self.local_path` does not end with `/`.  
+Use `os.path.join`:
+```python
+os.path.join(self.local_path, actual)
+```
+
+---
+
+### e. Custom Logging/Imports
+- Your custom imports (`com.amway.integration.custom...`) are not standard Python modules. Ensure these are available in your Airflow environment.
+
+---
+
+## 4. Summary Table
+
+| Issue                        | Airflow 2.0 Status | Fix/Suggestion                                                                 |
+|------------------------------|--------------------|--------------------------------------------------------------------------------|
+| `@apply_defaults`            | Deprecated         | Not used, so OK                                                                |
+| `BaseOperator` inheritance   | OK                 | OK                                                                             |
+| `GCSHook` import path        | OK                 | OK                                                                             |
+| `GCSHook.upload` signature   | OK                 | OK                                                                             |
+| Logging                      | Not integrated     | Use `self.log.*`                                                               |
+| Context via `os.environ`     | Not recommended    | Use `context` argument                                                         |
+| Return value of `execute`    | Potential issue    | Return serializable value (string, dict, etc.)                                 |
+| Path concatenation           | Potential bug      | Use `os.path.join`                                                             |
+| Custom imports               | N/A                | Ensure available in Airflow environment                                        |
+
+---
+
+## 5. Example Fixes
+
+**Logging and Context:**
+```python
+self.log.debug(f'Operator : called module with {self.conn_id}, ...')
+run_id = context['run_id']
+dag_id = context['dag'].dag_id
+```
+
+**Return Value:**
+```python
+return {"status": status, "error": str(error) if error else None}
+```
+
+**Path Join:**
+```python
+if os.path.isfile(os.path.join(self.local_path, actual)):
+    gcs_hook.upload(
+        bucket_name=self.bucket_name,
+        object_name=f'{self.remote_path}{renamed}',
+        filename=os.path.join(self.local_path, actual)
+    )
+```
+
+---
+
+## 6. Final Notes
+
+- No **removed** features are used.
+- Some **best practices** are not followed (logging, context, return value).
+- **No major breaking changes** for Airflow 2.0, but you should address the above for maintainability and future compatibility.
+
+---
+
+**If you want a refactored code sample, let me know!**

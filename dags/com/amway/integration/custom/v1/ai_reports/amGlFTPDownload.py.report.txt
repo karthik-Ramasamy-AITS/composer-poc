@@ -1,0 +1,134 @@
+Certainly! Here’s a detailed analysis of your code for **Apache Airflow 3.0** compatibility:
+
+---
+
+## 1. **Deprecated or Removed Features Used**
+
+### a. **BaseOperator Import Path**
+- **Current:** `from airflow.models import BaseOperator`
+- **Airflow 3.0:** `BaseOperator` is now imported from `airflow.operators.base.BaseOperator`. The old import path is **deprecated** and will be removed.
+
+### b. **Custom Operator Return Value**
+- **Current:** `return self.local_path, error`
+- **Airflow 3.0:** The `execute()` method should return a single value (not a tuple). Returning a tuple is **not recommended** and may cause issues with XCom serialization.
+
+### c. **Direct Use of Connection Objects**
+- **Current:** `ftp_connection = FTPHook.get_connection(conn_id=self.conn_id)`
+- **Airflow 3.0:** Directly calling `get_connection` as a class method is **deprecated**. You should instantiate the hook and use `self.get_connection()`.
+
+### d. **Environment Variables for Context**
+- **Current:** `os.environ.get('AIRFLOW_CTX_DAG_ID')`, etc.
+- **Airflow 3.0:** These environment variables are **undocumented and not guaranteed**. Use the `context` argument passed to `execute()` for task instance context.
+
+---
+
+## 2. **Breaking Changes**
+
+### a. **BaseOperator Constructor Signature**
+- Airflow 3.0 enforces [strict signature rules](https://airflow.apache.org/docs/apache-airflow/stable/howto/custom-operator.html#constructor-signature). All arguments except `**kwargs` must be keyword-only and passed to `super().__init__()`. Your usage is mostly correct, but double-check for any positional arguments.
+
+### b. **Template Fields**
+- No breaking change, but ensure all template fields are strings or lists of strings.
+
+### c. **FTP Hook Usage**
+- You are using `ftplib.FTP` directly instead of the Airflow `FTPHook` methods. This is not a breaking change, but you lose Airflow's connection management and logging.
+
+---
+
+## 3. **Suggested Fixes**
+
+### a. **Update BaseOperator Import**
+```python
+# Old
+from airflow.models import BaseOperator
+# New
+from airflow.operators.base import BaseOperator
+```
+
+### b. **Use Context for DAG Info**
+Replace:
+```python
+os.environ.get('AIRFLOW_CTX_DAG_ID')
+```
+With:
+```python
+context['dag'].dag_id
+```
+And similarly for other context variables:
+- `AIRFLOW_CTX_DAG_RUN_ID` → `context['dag_run'].run_id`
+- etc.
+
+### c. **Return Value**
+Change:
+```python
+return self.local_path, error
+```
+To:
+```python
+return self.local_path
+```
+If you need to pass `error`, use XComs explicitly.
+
+### d. **Connection Retrieval**
+Change:
+```python
+ftp_connection = FTPHook.get_connection(conn_id=self.conn_id)
+```
+To:
+```python
+ftp_hook = FTPHook(ftp_conn_id=self.conn_id)
+ftp_connection = ftp_hook.get_connection()
+```
+
+### e. **Passive Mode Handling**
+`ftp.set_pasv(bool(passive))` may not work as expected if `passive` is a string. Convert it properly:
+```python
+ftp.set_pasv(str(passive).lower() == 'true')
+```
+
+### f. **Use FTPHook Methods**
+Instead of using `ftplib.FTP` directly, consider using `FTPHook` methods like `retrieve_file()` for better compatibility and logging.
+
+---
+
+## 4. **Summary Table**
+
+| Issue                                 | Deprecated/Breaking | Suggested Fix                                                                 |
+|----------------------------------------|---------------------|-------------------------------------------------------------------------------|
+| `BaseOperator` import path             | Deprecated          | `from airflow.operators.base import BaseOperator`                             |
+| `execute()` returns tuple              | Breaking            | Return a single value; use XCom for multiple values                           |
+| `get_connection` as classmethod        | Deprecated          | Instantiate hook, then call `get_connection()`                                |
+| Use of env vars for context            | Breaking            | Use `context` argument in `execute()`                                         |
+| Direct use of `ftplib.FTP`             | Not recommended     | Use `FTPHook` methods                                                         |
+
+---
+
+## 5. **Example of Key Fixes**
+
+```python
+from airflow.operators.base import BaseOperator
+from airflow.providers.ftp.hooks.ftp import FTPHook
+
+class AmGlFTPDownload(BaseOperator):
+    # ... (rest of your code)
+    def execute(self, context: Any) -> str:
+        # Use context['dag'].dag_id, context['dag_run'].run_id, etc.
+        dag_id = context['dag'].dag_id
+        dag_run_id = context['dag_run'].run_id
+        # ...
+        # Use FTPHook instance
+        ftp_hook = FTPHook(ftp_conn_id=self.conn_id)
+        ftp_connection = ftp_hook.get_connection()
+        # ...
+        return self.local_path
+```
+
+---
+
+## 6. **References**
+- [Airflow 3.0 Changelog](https://github.com/apache/airflow/blob/main/UPDATING.md)
+- [Custom Operator Best Practices](https://airflow.apache.org/docs/apache-airflow/stable/howto/custom-operator.html)
+
+---
+
+**If you need a fully rewritten, Airflow 3.0-compliant version of your operator, let me know!**

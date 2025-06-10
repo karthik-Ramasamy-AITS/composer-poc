@@ -1,0 +1,182 @@
+Let's analyze your code for **Airflow 3.0 compatibility**.
+
+---
+
+## 1. Deprecated or Removed Features Used
+
+### a. `BaseOperator` Direct Subclassing and `__init__` Signature
+- **Airflow 2.0+** introduced [TaskFlow API](https://airflow.apache.org/docs/apache-airflow/stable/tutorial/taskflow.html) and stricter requirements for operator `__init__` signatures.
+- **Airflow 3.0** further enforces [PEP 517/518](https://airflow.apache.org/docs/apache-airflow/stable/installation/requirements.html) and [PEP 561](https://airflow.apache.org/docs/apache-airflow/stable/best-practices.html#type-annotations) compliance.
+- **Issue:** Your `__init__` does not call `super().__init__(*args, **kwargs)` with all arguments, and you use custom arguments without type annotations.
+
+### b. `template_fields` Usage
+- **No breaking change** here, but ensure all fields listed are actual attributes and are strings or lists of strings.
+
+### c. `FTPHook.get_connection`
+- **Breaking change:** In Airflow 2.3+, `get_connection` is a static method of `airflow.hooks.base.BaseHook`, not of the hook itself. In Airflow 3.0, this pattern is enforced.
+- **Your code:**  
+  ```python
+  ftp_connection = FTPHook.get_connection(conn_id=self.conn_id)
+  ```
+  This is **incorrect** in Airflow 2.3+ and 3.0.
+
+### d. Use of `os.environ.get('AIRFLOW_CTX_DAG_RUN_ID')`
+- **Not deprecated**, but Airflow 2.6+ recommends using the `context` dictionary passed to `execute` for context variables, not environment variables.
+
+### e. `AirflowException`
+- **Still present** in Airflow 3.0.
+
+### f. `FTPHook` usage
+- You are not actually using the `FTPHook` instance, but instead using `ftplib.FTP` directly. Airflow 3.0 expects you to use the provider's hook for connections, not raw `ftplib`.
+
+---
+
+## 2. Breaking Changes
+
+### a. `FTPHook.get_connection` is not valid
+- **Airflow 3.0:** Use `BaseHook.get_connection(conn_id)` instead.
+
+### b. `BaseOperator` `__init__` signature
+- **Airflow 3.0:** All custom operator arguments must be keyword-only and type-annotated.
+
+### c. `template_fields` mismatch
+- You list `'ssh_conn_id'` in `template_fields`, but your operator does not have an `ssh_conn_id` attribute. This will raise an error.
+
+### d. Use of `os.environ` for context
+- **Best practice:** Use the `context` argument passed to `execute`, not environment variables.
+
+### e. Return value of `execute`
+- Airflow expects `execute` to return a single value (not a tuple). Returning `(status, error)` is not standard and may break XCom or downstream tasks.
+
+---
+
+## 3. Suggested Fixes
+
+### a. Fix `FTPHook.get_connection`
+**Replace:**
+```python
+ftp_connection = FTPHook.get_connection(conn_id=self.conn_id)
+```
+**With:**
+```python
+from airflow.hooks.base import BaseHook
+ftp_connection = BaseHook.get_connection(self.conn_id)
+```
+
+### b. Remove `'ssh_conn_id'` from `template_fields`
+**Replace:**
+```python
+template_fields = ('ssh_conn_id' , 'regex', 'replacement', 'rename_mask', 'local_path', 'remote_path','instance_id')
+```
+**With:**
+```python
+template_fields = ('regex', 'replacement', 'rename_mask', 'local_path', 'remote_path', 'instance_id')
+```
+
+### c. Use context for DAG info
+**Replace:**
+```python
+os.environ.get('AIRFLOW_CTX_DAG_RUN_ID')
+```
+**With:**
+```python
+context['dag_run'].run_id
+```
+And similarly for other context variables.
+
+### d. Fix `__init__` signature and call
+**Add type annotations and ensure all args are keyword-only:**
+```python
+def __init__(
+    self,
+    *,
+    conn_id: str,
+    regex: str = '*',
+    replacement: str = None,
+    rename_mask: str = None,
+    local_path: str,
+    remote_path: str,
+    instance_id: str = None,
+    **kwargs,
+) -> None:
+    super().__init__(**kwargs)
+    ...
+```
+
+### e. Return a single value from `execute`
+**Replace:**
+```python
+return status, error
+```
+**With:**
+```python
+return status
+```
+Or, if you want to push error to XCom, use `self.xcom_push(context, key='error', value=error)`.
+
+### f. Use `FTPHook` for FTP operations
+- Instead of using `ftplib.FTP` directly, use `FTPHook`'s methods (`store_file`, etc.) for better compatibility and connection management.
+
+---
+
+## 4. Summary Table
+
+| Issue                                 | Airflow 3.0 Status | Suggested Fix                                                                 |
+|----------------------------------------|--------------------|-------------------------------------------------------------------------------|
+| `FTPHook.get_connection`               | Removed            | Use `BaseHook.get_connection(self.conn_id)`                                   |
+| `template_fields` mismatch             | Error              | Remove `'ssh_conn_id'` from `template_fields`                                 |
+| Use of `os.environ` for context        | Discouraged        | Use `context` dict in `execute`                                               |
+| `BaseOperator.__init__` signature      | Enforced           | Use keyword-only args, type annotations, call `super().__init__(**kwargs)`    |
+| Return value of `execute`              | Enforced           | Return a single value                                                         |
+| Direct use of `ftplib.FTP`             | Discouraged        | Use `FTPHook` methods                                                         |
+
+---
+
+## 5. Example of Fixed Snippet
+
+```python
+from airflow.hooks.base import BaseHook
+from airflow.providers.ftp.hooks.ftp import FTPHook
+
+class AmGlFTPUpload(BaseOperator):
+    template_fields = ('regex', 'replacement', 'rename_mask', 'local_path', 'remote_path', 'instance_id')
+
+    def __init__(
+        self,
+        *,
+        conn_id: str,
+        regex: str = '*',
+        replacement: str = None,
+        rename_mask: str = None,
+        local_path: str,
+        remote_path: str,
+        instance_id: str = None,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        self.conn_id = conn_id
+        self.regex = regex
+        self.replacement = replacement
+        self.rename_mask = rename_mask
+        self.local_path = local_path
+        self.remote_path = remote_path
+        self.instance_id = instance_id
+
+    def execute(self, context: dict) -> str:
+        # Use context['dag_run'].run_id, etc.
+        # Use FTPHook for FTP operations
+        # Return a single value
+        ...
+```
+
+---
+
+## 6. References
+
+- [Airflow 3.0 Changelog](https://airflow.apache.org/docs/apache-airflow/stable/release_notes.html)
+- [Custom Operator Best Practices](https://airflow.apache.org/docs/apache-airflow/stable/howto/custom-operator.html)
+- [FTPHook Docs](https://airflow.apache.org/docs/apache-airflow-providers-ftp/stable/_api/airflow/providers/ftp/hooks/ftp/index.html)
+
+---
+
+**If you apply these changes, your operator will be compatible with Airflow 3.0.**

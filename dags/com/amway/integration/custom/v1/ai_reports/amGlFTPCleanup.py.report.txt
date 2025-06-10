@@ -1,0 +1,193 @@
+Certainly! Here’s a detailed analysis of your code for **Airflow 3.0 compatibility**:
+
+---
+
+## 1. **Deprecated or Removed Features Used**
+
+### a. `BaseOperator` Direct Inheritance
+- **Airflow 3.0** requires all custom operators to call `super().__init__()` with all arguments, and the signature of `BaseOperator` has changed over time.
+- **Potential Issue:** If you use positional arguments or miss required arguments, it may break.
+
+### b. `template_fields` as a Class Attribute
+- **Still supported** in Airflow 3.0, but ensure all templated fields are strings or lists of strings.
+
+### c. `FTPHook.get_connection`
+- **Problem:** `get_connection` is a method of the `BaseHook` class, not of the `FTPHook` class. In Airflow 2.x and 3.x, you should use `FTPHook(conn_id=...)` and then access the connection via `self.get_connection(self.ftp_conn_id)` or use the hook's methods.
+- **Deprecated Usage:** `FTPHook.get_connection(conn_id=...)` is not the correct usage.
+
+### d. `AirflowException`
+- **Still present** in Airflow 3.0.
+
+### e. Environment Variables for Context
+- **Problem:** Accessing context via `os.environ.get('AIRFLOW_CTX_DAG_RUN_ID')` is not recommended. Airflow 2.x+ passes context as a parameter to `execute(self, context)`. These environment variables are not guaranteed to be present or stable in Airflow 3.0.
+- **Deprecated:** Use the `context` dictionary instead.
+
+### f. Return Value of `execute`
+- **Problem:** Airflow expects `execute` to return a single value (usually a string or dict), not a tuple. Returning `(status, error)` may break DAGs that expect XComs or single return values.
+
+---
+
+## 2. **Breaking Changes**
+
+### a. **FTPHook Usage**
+- **Old:** `ftp_connection = FTPHook.get_connection(conn_id=self.conn_id)`
+- **New:**  
+  ```python
+  ftp_hook = FTPHook(ftp_conn_id=self.conn_id)
+  ftp_connection = ftp_hook.get_connection(self.conn_id)
+  ```
+- **Or, better:** Use `ftp_hook` methods directly for file operations.
+
+### b. **Direct Use of `ftplib.FTP`**
+- **Problem:** You are manually instantiating `ftplib.FTP` and handling connection details. Airflow's `FTPHook` is designed to abstract this. Direct use may break if Airflow's connection handling changes.
+
+### c. **Environment Variables for Context**
+- **Problem:** As above, use `context` dict, e.g.:
+  ```python
+  dag_run_id = context['dag_run'].run_id
+  dag_id = context['dag'].dag_id
+  ```
+
+### d. **Return Value**
+- **Problem:** `execute` should return a single value.
+
+---
+
+## 3. **Suggested Fixes**
+
+### a. **Use FTPHook Properly**
+Replace:
+```python
+ftp_connection = FTPHook.get_connection(conn_id=self.conn_id)
+ftp = FTP()
+...
+ftp.connect(host=ftp_connection.host, port=ftp_connection.port)
+ftp.login(ftp_connection.login, ftp_connection.get_password())
+ftp.cwd(f'{self.remote_path}')
+```
+With:
+```python
+ftp_hook = FTPHook(ftp_conn_id=self.conn_id)
+ftp = ftp_hook.get_conn()
+ftp.cwd(self.remote_path)
+```
+Or, use `ftp_hook.delete_file()` for each file.
+
+### b. **Use Context Dict Instead of Environment Variables**
+Replace:
+```python
+os.environ.get('AIRFLOW_CTX_DAG_RUN_ID')
+```
+With:
+```python
+context['dag_run'].run_id
+```
+And similarly for other context values.
+
+### c. **Return a Single Value from `execute`**
+Change:
+```python
+return status, error
+```
+To:
+```python
+return status
+```
+Or, if you need to return both, wrap in a dict:
+```python
+return {"status": status, "error": str(error) if error else None}
+```
+
+### d. **General Modernization**
+- Consider using Airflow's logging (`self.log.info`, etc.) instead of custom loggers.
+- Use Airflow's XComs if you need to pass data between tasks.
+
+---
+
+## 4. **Summary Table**
+
+| Issue | Deprecated/Breaking? | Fix |
+|-------|----------------------|-----|
+| `FTPHook.get_connection` | Breaking | Use `FTPHook(ftp_conn_id=...).get_conn()` |
+| Direct `ftplib.FTP` usage | Not recommended | Use `FTPHook` methods |
+| Env vars for context | Deprecated | Use `context` dict |
+| `execute` returns tuple | Breaking | Return single value or dict |
+| Custom logging | Not breaking | Prefer `self.log` |
+
+---
+
+## 5. **Example of Fixed `execute` Method**
+
+```python
+def execute(self, context: Any) -> str:
+    error = None
+    status = 'FAILED'
+    try:
+        is_deleted = False
+        self.log.debug(f'Operator : called module with {self.conn_id}, {self.regex} and {self.remote_path}')
+        ftp_hook = FTPHook(ftp_conn_id=self.conn_id)
+        ftp = ftp_hook.get_conn()
+        ftp.cwd(self.remote_path)
+        list_of_files = os.listdir(self.local_path)
+        self.log.info(f'Operator : list_of_files : {list_of_files}')
+        for file in list_of_files:
+            try:
+                ftp.delete(self.remote_path + str(file))
+                is_deleted = True
+            except ftplib.error_perm:
+                self.log.error(f'File - {self.remote_path}{file} not found.')
+                pass
+        if is_deleted:
+            ftp.quit()
+        self.log.debug(f'Operator: {list_of_files} removed from {self.remote_path}')
+        dag_run_id = context['dag_run'].run_id
+        dag_id = context['dag'].dag_id
+        logToPVF(
+            dag_run_id,
+            dag_run_id,
+            dag_id,
+            dag_id,
+            self.instance_id,
+            '',
+            'ACTIVITY',
+            self.conn_id,
+            f'Operator: AmGlFTPCleanup - {list_of_files} removed from {self.remote_path}'
+        )
+        status = 'SUCCESS'
+    except Exception as e:
+        self.log.error(f'Operator : exception while cleanup {e}')
+        error = e
+        dag_run_id = context['dag_run'].run_id
+        dag_id = context['dag'].dag_id
+        logToPVF(
+            dag_run_id,
+            dag_run_id,
+            dag_id,
+            dag_id,
+            self.instance_id,
+            '',
+            'ERROR',
+            self.conn_id,
+            f'Operator: Failure in AmGlFTPCleanup, reason {e}'
+        )
+        raise AirflowException(f"exception while cleanup , error: {e}")
+    return status
+```
+
+---
+
+## 6. **References**
+- [Airflow 3.0 Changelog](https://airflow.apache.org/docs/apache-airflow/stable/upgrading-to-3.html)
+- [Airflow 2.x Operator Guide](https://airflow.apache.org/docs/apache-airflow/stable/howto/operator/index.html)
+- [FTPHook Docs](https://airflow.apache.org/docs/apache-airflow-providers-ftp/stable/_api/airflow/providers/ftp/hooks/ftp/index.html)
+
+---
+
+**In summary:**  
+- Fix FTPHook usage  
+- Use context dict, not env vars  
+- Return a single value from `execute`  
+- Prefer Airflow logging  
+- Avoid direct `ftplib.FTP` unless necessary
+
+Let me know if you need a full refactored version!

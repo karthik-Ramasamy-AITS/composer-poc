@@ -1,0 +1,136 @@
+Let's analyze your code for **Airflow 2.0 compatibility**.
+
+---
+
+## 1. Deprecated or Removed Features Used
+
+### a. `BaseOperator` Direct Inheritance
+- **Airflow 2.0** still supports direct inheritance from `BaseOperator`, but it is recommended to use the `@apply_defaults` decorator for backward compatibility with Airflow 1.x. In Airflow 2.x, `@apply_defaults` is deprecated, and you should use standard Python args/kwargs.
+
+### b. `GCSHook` Import Path
+- Your import:  
+  ```python
+  from airflow.providers.google.cloud.hooks.gcs import GCSHook
+  ```
+  - **Correct for Airflow 2.0+**.  
+  - In Airflow 1.x, the path was `airflow.contrib.hooks.gcs_hook`.
+
+### c. `template_fields` as Tuple
+- This is still valid in Airflow 2.0.
+
+### d. Use of `os.environ.get('AIRFLOW_CTX_DAG_ID')` etc.
+- These environment variables are set by Airflow when using the KubernetesExecutor or when running tasks in certain contexts, but **they are not guaranteed to be present in all execution environments**.  
+- **Best practice**: Use the `context` argument passed to `execute()` to access DAG/task/run info.
+
+### e. Return Value of `execute()`
+- In Airflow 2.0, `execute()` should return a single value (not a tuple). Returning a tuple may cause issues with XComs and downstream tasks.
+
+---
+
+## 2. Breaking Changes
+
+### a. `execute()` Return Value
+- **Airflow 2.0 expects a single return value** from `execute()`. Returning a tuple (`self.local_path, error`) is not standard and may break XComs or downstream tasks.
+
+### b. Environment Variables for Context
+- **Do not rely on `os.environ.get('AIRFLOW_CTX_DAG_ID')`**. Instead, use the `context` dictionary passed to `execute()`:
+  ```python
+  dag_id = context['dag'].dag_id
+  dag_run_id = context['dag_run'].run_id
+  ```
+
+### c. `match_glob` Parameter in `GCSHook.list`
+- The `match_glob` parameter is **not present in all versions** of the Google provider. In Airflow 2.0, you should check the [provider version](https://airflow.apache.org/docs/apache-airflow-providers-google/stable/_api/airflow/providers/google/cloud/hooks/gcs/index.html#airflow.providers.google.cloud.hooks.gcs.GCSHook.list).
+- If you use `match_glob`, ensure your Google provider version supports it.
+
+### d. `delimiter` Parameter in `GCSHook.list`
+- The `delimiter` parameter is supported, but be aware of its effect: it will only return objects/directories at the given prefix level.
+
+---
+
+## 3. Suggested Fixes
+
+### a. Use `context` Instead of `os.environ`
+Replace:
+```python
+os.environ.get('AIRFLOW_CTX_DAG_ID')
+os.environ.get('AIRFLOW_CTX_DAG_RUN_ID')
+```
+With:
+```python
+dag_id = context['dag'].dag_id
+dag_run_id = context['dag_run'].run_id
+```
+And use these variables throughout your code.
+
+---
+
+### b. Return a Single Value from `execute()`
+Change:
+```python
+return self.local_path, error
+```
+To:
+```python
+return self.local_path
+```
+If you need to pass `error`, use XComs explicitly.
+
+---
+
+### c. Check `GCSHook.list` Parameters
+- Ensure your Google provider version supports `match_glob`. If not, filter files in Python after listing.
+
+---
+
+### d. Use `self.log` for Logging
+- Airflow 2.0+ recommends using `self.log.info()`, `self.log.debug()`, etc., instead of custom loggers, for better integration with Airflow's logging system.
+
+---
+
+### e. Remove Unused Imports
+- Remove unused imports like `shutil`, `stat`, `timedelta`, `datetime` if not used.
+
+---
+
+## 4. Example of Key Fixes
+
+```python
+def execute(self, context: Any) -> str:
+    error = None
+    try:
+        dag_id = context['dag'].dag_id
+        dag_run_id = context['dag_run'].run_id
+        # ... use dag_id and dag_run_id instead of os.environ ...
+        # rest of your code
+    except Exception as e:
+        # handle error
+        raise AirflowException(f"exception while downloading , error: {e}")
+    return self.local_path  # Only return a single value
+```
+
+---
+
+## 5. Summary Table
+
+| Issue | Airflow 2.0 Status | Suggested Fix |
+|-------|--------------------|--------------|
+| Use of `os.environ.get('AIRFLOW_CTX_DAG_ID')` | Not recommended | Use `context` dict |
+| `execute()` returns tuple | Not supported | Return a single value |
+| `match_glob` in `GCSHook.list` | Provider-specific | Check provider version or filter in Python |
+| Logging via custom loggers | Not recommended | Use `self.log` methods |
+| Unused imports | N/A | Remove them |
+
+---
+
+## 6. Final Recommendations
+
+- **Refactor to use the `context` argument for all DAG/task/run info.**
+- **Return only a single value from `execute()`.**
+- **Check your Google provider version for `match_glob` support.**
+- **Use Airflow's built-in logging.**
+- **Remove unused imports.**
+
+---
+
+**If you want a refactored code sample, let me know!**
