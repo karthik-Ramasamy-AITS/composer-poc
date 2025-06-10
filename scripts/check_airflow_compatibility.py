@@ -34,7 +34,7 @@ def main():
     report_dir = "ai_reports"
     os.makedirs(report_dir, exist_ok=True)
 
-    for path in glob.glob("dags/**/*.py", recursive=True):
+    for path in glob.glob("dags/com/amway/integration/custom/v1/sftp/**/*.py", recursive=True):
         print(f"Analyzing: {path}")
         result = analyze_code(path)
         with open(f"{report_dir}/{os.path.basename(path)}.report.txt", "w") as f:
