@@ -5,7 +5,7 @@ import os
 import glob
 
 client = OpenAI()
-openai.api_key = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 def analyze_code(file_path):
     with open(file_path, "r") as f:
